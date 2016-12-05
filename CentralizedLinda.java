@@ -38,7 +38,7 @@ public class CentralizedLinda implements Linda {
     
 
     /** Adds a tuple t to the tuplespace. */
-    public void write(Tuple t) {
+    public synchronized void write(Tuple t) {
     	this.lock.lock();
         this.tuplespace.add(t);
         while (this.it.hasNext()) {
@@ -83,7 +83,7 @@ public class CentralizedLinda implements Linda {
     
     /** Returns a tuple matching the template and leaves it in the tuplespace.
      * Blocks if no corresponding tuple is found. */
-    public Tuple read(Tuple template) {
+    public synchronized Tuple read(Tuple template) {
     	this.lock.lock();
     	Tuple resultat = null;
     	boolean trouve = false;
