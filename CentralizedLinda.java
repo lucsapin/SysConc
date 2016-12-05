@@ -59,7 +59,7 @@ public class CentralizedLinda implements Linda {
     	boolean trouve = false;
         for (Tuple tuple : this.tuplespace) {
         	if (tuple.matches(template)) {
-        		resultat = this.tuplespace.get(tuplespace.indexOf(tuple));
+        		resultat = tuple;
                 this.tuplespace.remove(tuple);
                 trouve = true;
                 lock.unlock();
@@ -76,7 +76,7 @@ public class CentralizedLinda implements Linda {
 			} finally {
 				this.lock.unlock();
 	        }
-        }        
+        }
         return resultat;        
     }
 
@@ -89,7 +89,7 @@ public class CentralizedLinda implements Linda {
     	boolean trouve = false;
     	for (Tuple tuple : this.tuplespace) {
     		if (tuple.matches(template)) {
-    			resultat = this.tuplespace.get(tuplespace.indexOf(tuple));
+    			resultat = tuple;
                 trouve = true;
                 lock.unlock();
                 break;
