@@ -1,56 +1,112 @@
 package linda.shm;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+import linda.AsynchronousCallback;
 import linda.Callback;
 import linda.Linda;
 import linda.Tuple;
-
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
 
 /** Shared memory implementation of Linda. */
 public class CentralizedLinda implements Linda {
 
 	
-    private List<Tuple> tuplespace;
+	/** Attributes. */
+    private List<Tuple> tuplespace;			// liste des tuples
+    private ReentrantLock lock;				// lock pour controler l'acces aux ressources partagees par les threads
+    private Condition attente;				// condition pour mettre en attente et reveiller les threads
+    private Map<Thread, Tuple> demandeurs;	// map des threads avec le tuple demandé
+    private Iterator it;					// pour iterer dans la map
 
     
     /** Constructor. */
     public CentralizedLinda() {
         this.tuplespace = new ArrayList<Tuple>();
+        this.lock = new ReentrantLock();
+        this.attente = lock.newCondition();
+        this.demandeurs = new HashMap<Thread, Tuple>();
+        this.it = demandeurs.entrySet().iterator();
     }
     
 
     /** Adds a tuple t to the tuplespace. */
     public void write(Tuple t) {
+    	this.lock.lock();
         this.tuplespace.add(t);
+        while (this.it.hasNext()) {
+        	Map.Entry<Thread, Tuple> pair = (Entry<Thread, Tuple>) it.next();
+        	if (pair.getValue().matches(t)) {
+        		this.attente.notify();
+        	}
+        }
+        this.lock.unlock();
     }
 
     
     /** Returns a tuple matching the template and removes it from the tuplespace.
      * Blocks if no corresponding tuple is found. */
-    public  synchronized Tuple take(Tuple template) {
-        if (this.tuplespace.contains(template)) {
-            this.tuplespace.remove(template);
-            return tuplespace.get(tuplespace.indexOf(template));
+    public synchronized Tuple take(Tuple template) {	
+    	this.lock.lock();
+    	Tuple resultat = null;
+    	boolean trouve = false;
+        for (Tuple tuple : this.tuplespace) {
+        	if (tuple.matches(template)) {
+        		resultat = this.tuplespace.get(tuplespace.indexOf(tuple));
+                this.tuplespace.remove(tuple);
+                trouve = true;
+                lock.unlock();
+                break;
+	        }
         }
-        else {
-        	return null;
-            // BLOQUER LA METHODE AVEC UN MONITEUR
-        }
+        if (!trouve) {
+        	try {
+        		this.demandeurs.put(Thread.currentThread(), template);
+	        	this.attente.await();
+	        	resultat = take(template);
+        	} catch (InterruptedException e) {
+				e.printStackTrace();
+			} finally {
+				this.lock.unlock();
+	        }
+        }        
+        return resultat;        
     }
 
     
     /** Returns a tuple matching the template and leaves it in the tuplespace.
      * Blocks if no corresponding tuple is found. */
     public Tuple read(Tuple template) {
-        if (this.tuplespace.contains(template)) {
-            return tuplespace.get(tuplespace.indexOf(template));
+    	this.lock.lock();
+    	Tuple resultat = null;
+    	boolean trouve = false;
+    	for (Tuple tuple : this.tuplespace) {
+    		if (tuple.matches(template)) {
+    			resultat = this.tuplespace.get(tuplespace.indexOf(tuple));
+                trouve = true;
+                lock.unlock();
+                break;
+	        }
         }
-        else {
-        	return null;
-            // BLOQUER LA METHODE AVEC UN MONITEUR
-        }
+        if (!trouve) {
+        	try {
+        		this.demandeurs.put(Thread.currentThread(), template);
+	        	this.attente.await();
+	        	resultat = read(template);
+        	} catch (InterruptedException e) {
+				e.printStackTrace();
+			} finally {
+				this.lock.unlock();
+	        }
+        }        
+        return resultat;
     }
 
     
@@ -60,8 +116,7 @@ public class CentralizedLinda implements Linda {
         if (this.tuplespace.contains(template)) {
             this.tuplespace.remove(template);
             return tuplespace.get(tuplespace.indexOf(template));
-        }
-        else {
+        } else {
             return null;
         }
     }
@@ -72,8 +127,7 @@ public class CentralizedLinda implements Linda {
     public  Tuple tryRead(Tuple template) {
         if (this.tuplespace.contains(template)) {
             return tuplespace.get(tuplespace.indexOf(template));
-        }
-        else {
+        } else {
             return null;
         }
     }
@@ -87,7 +141,7 @@ public class CentralizedLinda implements Linda {
     public Collection<Tuple> takeAll(Tuple template) {
         ArrayList<Tuple> listeTemplate = new ArrayList<Tuple>();
         for (Tuple element : tuplespace) {
-            if (element==template) {
+            if (element == template) {
                 listeTemplate.add(element);
                 this.tuplespace.remove(element);
             }
@@ -102,7 +156,13 @@ public class CentralizedLinda implements Linda {
      * for instance (write([1]);write([2])) || readAll([?Integer]) may return only [2].
      */
 	public Collection<Tuple> readAll(Tuple template) {
-		return null;
+		ArrayList<Tuple> listeTemplate = new ArrayList<Tuple>();
+        for (Tuple element : tuplespace) {
+            if (element == template) {
+                listeTemplate.add(element);
+            }
+        }
+        return listeTemplate;
 	}
 
 	
