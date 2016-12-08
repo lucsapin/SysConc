@@ -3,11 +3,8 @@ package linda.shm;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -21,11 +18,11 @@ public class CentralizedLinda implements Linda {
 
 	
 	/** Attributes. */
-    private List<Tuple> tuplespace;			// liste des tuples
-    private Lock lock;				// lock pour controler l'acces aux ressources partagees par les threads
-    private Condition condRead;				// conditions pour mettre en attente et reveiller les threads
-    private Condition condTake;
-    private Map<Thread, Tuple> demandeurs;	// map des threads avec le tuple demandé
+	// Liste des tuples
+    private List<Tuple> tuplespace;
+    // Lock pour controler l'acces aux ressources partagees par les threads
+    private Lock lock;
+    // Liste d'attente des callbacks
     private Map<Tuple, List<Abonnement>> listeAttente;
 
     
@@ -33,9 +30,6 @@ public class CentralizedLinda implements Linda {
     public CentralizedLinda() {
         this.tuplespace = new ArrayList<Tuple>();
         this.lock = new ReentrantLock();
-        this.condRead = lock.newCondition();
-        this.condTake = lock.newCondition();
-        this.demandeurs = new HashMap<Thread, Tuple>();
         this.listeAttente = new HashMap<Tuple, List<Abonnement>>();
     }
     
@@ -43,47 +37,28 @@ public class CentralizedLinda implements Linda {
     /** Adds a tuple t to the tuplespace.
      */
     public synchronized void write(Tuple t) {
-    	// Ajouter le tuple au tuplespace
-        this.tuplespace.add(t);
-        System.out.println("write apres le add");
-    	System.out.println("write avant le lock");
-    	// Bloquer le lock
-    	this.lock.lock();
-    	System.out.println("write apres le lock");
-        // Réveiller les threads qui demandent un read d'abord
-        this.condRead.signalAll();
-        System.out.println("write apres le signal read");
-        // Ensuite réveiller ceux qui demandent un take
-        this.condTake.signalAll();
-        System.out.println("write apres le signal take");
-        // Débloquer le lock
-        this.lock.unlock();
-        System.out.println("fin write");
-        
-        // Itérateur pour parcourir la map
-        //Iterator<Entry<Thread, Tuple>> it = demandeurs.entrySet().iterator();
-        //while (it.hasNext()) {
-        	//Map.Entry<Thread, Tuple> pair = (Entry<Thread, Tuple>) it.next();
-        	// Si un thread écrit un tuple qui matche le tuple demandé par un autre thread en attente
-        	//if (pair.getValue().matches(t)) {
-        		// Notifier le thread en attente de lecture
-        		//this.condRead.notify();
-        		// Notifier le thread en attente de take
-        		//this.condTake.notify();
-        		// Enlever le thread de la map des demandeurs
-        		//this.demandeurs.remove(pair.getKey());
-        		//this.lock.unlock();
-        		//break;
-        	//}
-        //}
+        try {
+	    	// Prendre le lock
+	    	this.lock.lock();
+	    	// Ajouter le tuple au tuplespace
+	        this.tuplespace.add(t);
+	    	synchronized(this) {
+	    		this.notifyAll();
+	    	}
+        } finally {
+        	// Lacher le lock
+        	this.lock.unlock();
+        }        
     }
 
     
     /** Returns a tuple matching the template and removes it from the tuplespace.
      * Blocks if no corresponding tuple is found.
      */
-    public synchronized Tuple take(Tuple template) {	
-    	//this.lock.lock();
+    public synchronized Tuple take(Tuple template) {
+    	// Prendre le lock
+    	this.lock.lock();
+    	
     	Tuple resultat = null;
     	boolean trouve = false;
     	
@@ -95,24 +70,23 @@ public class CentralizedLinda implements Linda {
         		resultat = tuple;
                 this.tuplespace.remove(tuple);
                 trouve = true;
-                // Déverouiller le lock et sortir de la boucle for
-                //lock.unlock();
+                // Sortir de la boucle for
                 break;
 	        }
         }
+        
+        // Lacher le lock
+        this.lock.unlock();
+        
         // Si on ne trouve pas de tuple correspondant
         if (!trouve) {
         	try {
-        		// Ajouter le thread et le tuple qu'il demande aux demandeurs
-        		//this.demandeurs.put(Thread.currentThread(), template);
-        		// Bloquer le lock
-        		this.lock.lock();
         		// Bloquer le thread
-	        	this.condTake.await();
-	        	// Une fois le thread réveillé, appel récursif sur take
+        		synchronized(this) {
+        			this.wait();
+        		}
+        		// Une fois le thread réveillé, appel récursif sur take
 	        	resultat = take(template);
-	        	// Débloquer le locke
-	        	this.lock.unlock();
         	} catch (InterruptedException e) {
 				e.printStackTrace();
 			}
@@ -125,42 +99,41 @@ public class CentralizedLinda implements Linda {
      * Blocks if no corresponding tuple is found.
      */
     public synchronized Tuple read(Tuple template) {
-    	this.lock.lock();
+    	
     	Tuple resultat = null;
     	boolean trouve = false;
-    	System.out.println("read avant parcours");
     	
-    	// Parcourir la liste des tuples
-    	for (Tuple tuple : this.tuplespace) {
-    		System.out.println("read parcours");
-    		// Si un tuple matche le template demandé
-    		if (tuple.matches(template)) {
-    			System.out.println("read match");
-    			// Retourner le tuple
-    			resultat = tuple;
-                trouve = true;
-                // Déverouiller le lock et sortir de la boucle for
-                lock.unlock();
-                break;
+    	try {
+	    	// Prendre le lock
+	    	this.lock.lock();
+	    	// Parcourir la liste des tuples
+	    	for (Tuple tuple : this.tuplespace) {
+	    		// Si un tuple matche le template demandé
+	    		if (tuple.matches(template)) {
+	    			// Retourner le tuple
+	    			resultat = tuple;
+	                trouve = true;
+	                // Sortir de la boucle for
+	                break;
+		        }
 	        }
-        }
+    	} finally {
+        	// Lacher le lock
+    		this.lock.unlock();
+    	}
+    	
+
     	// Si on ne trouve pas de tuple correspondant
         if (!trouve) {
-        	System.out.println("read non match");
         	try {
-        		// Ajouter le thread et le tuple qu'il demande aux demandeurs
-        		//this.demandeurs.put(Thread.currentThread(), template);
-        		System.out.println("read avant de bloquer le thread");
         		// Bloquer le thread
-	        	this.condRead.await();
-	        	System.out.println("read thread réveillé");
+        		synchronized(this) {
+        			this.wait();
+        		}
 	        	// Une fois le thread réveillé, appel récursif sur read
 	        	resultat = read(template);
         	} catch (InterruptedException e) {
 				e.printStackTrace();
-			} finally {
-				// Dans tous les cas, déverouiller le lock
-				this.lock.unlock();
 	        }
         }        
         return resultat;
@@ -252,7 +225,6 @@ public class CentralizedLinda implements Linda {
      */
 	public void eventRegister(eventMode mode, eventTiming timing, Tuple template, Callback callback) {
 		Tuple temp = null;
-		
 		// Timing immédiat
 		if (timing == eventTiming.IMMEDIATE) {
 			// Essayer read ou take en fonction du mode
@@ -275,20 +247,9 @@ public class CentralizedLinda implements Linda {
 		}
 		
 	}
-
 	
-    /** To debug, prints any information it wants (e.g. the tuples in tuplespace or the registered callbacks), prefixed by <code>prefix</code. */
-	public void debug(String prefix) {
-		System.out.println("Debug " + prefix + " :");
-		int i = 1;
-        for (Tuple tuple : tuplespace) {
-        	System.out.println("Tuple n°" + i + " : " + tuple.toString());
-        	i++;
-        }
-	}
 	
 	/** Enregistrer un callback 
-	 * 
 	 * @param template
 	 * @param callback
 	 * @param mode
@@ -297,7 +258,6 @@ public class CentralizedLinda implements Linda {
 		Abonnement abo = new Abonnement(mode, callback);
 		
 		// Vérifier si la liste des abonnements au template est vide
-		
 		if (listeAttente.get(template) == null) {
 			// Si elle est vide, la créer et...
 			List<Abonnement> liste = new ArrayList<Abonnement>();
@@ -309,6 +269,21 @@ public class CentralizedLinda implements Linda {
 			listeAttente.get(template).add(abo);
 		}
 	}
+	
+	
+    /** To debug, prints any information it wants (e.g. the tuples in tuplespace or the registered callbacks), prefixed by <code>prefix</code. */
+	public void debug(String prefix) {
+		this.lock.lock();
+		System.out.print("Debug " + prefix + " :");
+		int i = 1;
+        for (Tuple tuple : tuplespace) {
+        	System.out.print("  T" + i + ":" + tuple.toString());
+        	i++;
+        }
+    	System.out.println();
+    	this.lock.unlock();
+	}
+
 
 	
 }
