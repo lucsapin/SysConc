@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import linda.AsynchronousCallback;
@@ -21,7 +22,7 @@ public class CentralizedLinda implements Linda {
 	
 	/** Attributes. */
     private List<Tuple> tuplespace;			// liste des tuples
-    private ReentrantLock lock;				// lock pour controler l'acces aux ressources partagees par les threads
+    private Lock lock;				// lock pour controler l'acces aux ressources partagees par les threads
     private Condition condRead;				// conditions pour mettre en attente et reveiller les threads
     private Condition condTake;
     private Map<Thread, Tuple> demandeurs;	// map des threads avec le tuple demandé
@@ -42,26 +43,39 @@ public class CentralizedLinda implements Linda {
     /** Adds a tuple t to the tuplespace.
      */
     public synchronized void write(Tuple t) {
-    	this.lock.lock();
     	// Ajouter le tuple au tuplespace
         this.tuplespace.add(t);
+        System.out.println("write apres le add");
+    	System.out.println("write avant le lock");
+    	// Bloquer le lock
+    	this.lock.lock();
+    	System.out.println("write apres le lock");
+        // Réveiller les threads qui demandent un read d'abord
+        this.condRead.signalAll();
+        System.out.println("write apres le signal read");
+        // Ensuite réveiller ceux qui demandent un take
+        this.condTake.signalAll();
+        System.out.println("write apres le signal take");
+        // Débloquer le lock
+        this.lock.unlock();
+        System.out.println("fin write");
         
         // Itérateur pour parcourir la map
-        Iterator<Entry<Thread, Tuple>> it = demandeurs.entrySet().iterator();
-        while (it.hasNext()) {
-        	Map.Entry<Thread, Tuple> pair = (Entry<Thread, Tuple>) it.next();
+        //Iterator<Entry<Thread, Tuple>> it = demandeurs.entrySet().iterator();
+        //while (it.hasNext()) {
+        	//Map.Entry<Thread, Tuple> pair = (Entry<Thread, Tuple>) it.next();
         	// Si un thread écrit un tuple qui matche le tuple demandé par un autre thread en attente
-        	if (pair.getValue().matches(t)) {
+        	//if (pair.getValue().matches(t)) {
         		// Notifier le thread en attente de lecture
-        		this.condRead.notify();
+        		//this.condRead.notify();
         		// Notifier le thread en attente de take
-        		this.condTake.notify();
+        		//this.condTake.notify();
         		// Enlever le thread de la map des demandeurs
-        		this.demandeurs.remove(pair.getKey());
-        		this.lock.unlock();
-        		break;
-        	}
-        }
+        		//this.demandeurs.remove(pair.getKey());
+        		//this.lock.unlock();
+        		//break;
+        	//}
+        //}
     }
 
     
@@ -69,7 +83,7 @@ public class CentralizedLinda implements Linda {
      * Blocks if no corresponding tuple is found.
      */
     public synchronized Tuple take(Tuple template) {	
-    	this.lock.lock();
+    	//this.lock.lock();
     	Tuple resultat = null;
     	boolean trouve = false;
     	
@@ -82,7 +96,7 @@ public class CentralizedLinda implements Linda {
                 this.tuplespace.remove(tuple);
                 trouve = true;
                 // Déverouiller le lock et sortir de la boucle for
-                lock.unlock();
+                //lock.unlock();
                 break;
 	        }
         }
@@ -90,17 +104,18 @@ public class CentralizedLinda implements Linda {
         if (!trouve) {
         	try {
         		// Ajouter le thread et le tuple qu'il demande aux demandeurs
-        		this.demandeurs.put(Thread.currentThread(), template);
+        		//this.demandeurs.put(Thread.currentThread(), template);
+        		// Bloquer le lock
+        		this.lock.lock();
         		// Bloquer le thread
 	        	this.condTake.await();
 	        	// Une fois le thread réveillé, appel récursif sur take
 	        	resultat = take(template);
+	        	// Débloquer le locke
+	        	this.lock.unlock();
         	} catch (InterruptedException e) {
 				e.printStackTrace();
-			} finally {
-				// Dans tous les cas, déverouiller le lock
-				this.lock.unlock();
-	        }
+			}
         }
         return resultat;        
     }
@@ -113,11 +128,14 @@ public class CentralizedLinda implements Linda {
     	this.lock.lock();
     	Tuple resultat = null;
     	boolean trouve = false;
+    	System.out.println("read avant parcours");
     	
     	// Parcourir la liste des tuples
     	for (Tuple tuple : this.tuplespace) {
+    		System.out.println("read parcours");
     		// Si un tuple matche le template demandé
     		if (tuple.matches(template)) {
+    			System.out.println("read match");
     			// Retourner le tuple
     			resultat = tuple;
                 trouve = true;
@@ -128,11 +146,14 @@ public class CentralizedLinda implements Linda {
         }
     	// Si on ne trouve pas de tuple correspondant
         if (!trouve) {
+        	System.out.println("read non match");
         	try {
         		// Ajouter le thread et le tuple qu'il demande aux demandeurs
-        		this.demandeurs.put(Thread.currentThread(), template);
+        		//this.demandeurs.put(Thread.currentThread(), template);
+        		System.out.println("read avant de bloquer le thread");
         		// Bloquer le thread
 	        	this.condRead.await();
+	        	System.out.println("read thread réveillé");
 	        	// Une fois le thread réveillé, appel récursif sur read
 	        	resultat = read(template);
         	} catch (InterruptedException e) {
@@ -276,6 +297,7 @@ public class CentralizedLinda implements Linda {
 		Abonnement abo = new Abonnement(mode, callback);
 		
 		// Vérifier si la liste des abonnements au template est vide
+		
 		if (listeAttente.get(template) == null) {
 			// Si elle est vide, la créer et...
 			List<Abonnement> liste = new ArrayList<Abonnement>();
@@ -283,6 +305,7 @@ public class CentralizedLinda implements Linda {
 			liste.add(abo);
 			listeAttente.put(template, liste);
 		} else {
+			// Si elle existe, y ajouter l'abonnement
 			listeAttente.get(template).add(abo);
 		}
 	}
