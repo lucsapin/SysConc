@@ -22,33 +22,64 @@ public class CentralizedLinda implements Linda {
     private List<Tuple> tuplespace;
     // Lock pour controler l'acces aux ressources partagees par les threads
     private Lock lock;
-    // Liste d'attente des callbacks
+    // Liste d'attente des abonnés mappés au tuple qu'ils cherchent
     private Map<Tuple, List<Abonnement>> listeAttente;
-
+    // Pour gérer les paramètres du tuplespace et de la file d'attente
+    private int tailleMaxTuplespace;
+    private int tailleMaxFile;
+    private int tailleCouranteFile;
+    // Nombre de processus actifs
+    private int nbProc;
+    
     
     /** Constructor. */
     public CentralizedLinda() {
         this.tuplespace = new ArrayList<Tuple>();
         this.lock = new ReentrantLock();
         this.listeAttente = new HashMap<Tuple, List<Abonnement>>();
+        this.tailleMaxTuplespace = 256;
+        this.tailleCouranteFile = 0;
+        this.tailleMaxFile = 256;
     }
     
+	
+	/** Chercher un callback
+	 * @param template
+	 */
+	public void searchCallback(Tuple t) {
+    	List<Abonnement> liste = null;
+    	for (Tuple tuple : listeAttente.keySet()) {
+    		if (t.matches(tuple)) liste = listeAttente.get(tuple);
+    	}
+    	if (liste != null) {
+    		for(Abonnement abo : liste) {
+    			eventRegister(abo.getMode(), eventTiming.IMMEDIATE, t, abo.getCallback());
+    		}
+    		liste.clear();
+    	}
+    }
+
 
     /** Adds a tuple t to the tuplespace.
      */
     public synchronized void write(Tuple t) {
-        try {
-	    	// Prendre le lock
-	    	this.lock.lock();
-	    	// Ajouter le tuple au tuplespace
-	        this.tuplespace.add(t);
-	    	synchronized(this) {
-	    		this.notifyAll();
-	    	}
-        } finally {
-        	// Lacher le lock
-        	this.lock.unlock();
-        }        
+    	if (this.tuplespace.size() <= this.tailleMaxTuplespace) {
+	        try {
+		    	// Prendre le lock
+		    	this.lock.lock();
+		    	// Ajouter le tuple au tuplespace
+		        this.tuplespace.add(t);
+		    	synchronized(this) {
+		    		this.notifyAll();
+		    	}
+		    	searchCallback(t);
+	        } finally {
+	        	// Lacher le lock
+	        	this.lock.unlock();
+	        }      
+    	} else {
+    		System.out.println("Taille max du tuplespace atteinte !");
+    	}
     }
 
     
@@ -85,6 +116,7 @@ public class CentralizedLinda implements Linda {
         		synchronized(this) {
         			this.wait();
         		}
+        		this.nbProc++;
         		// Une fois le thread réveillé, appel récursif sur take
 	        	resultat = take(template);
         	} catch (InterruptedException e) {
@@ -113,6 +145,7 @@ public class CentralizedLinda implements Linda {
 	    			// Retourner le tuple
 	    			resultat = tuple;
 	                trouve = true;
+	                this.nbProc--;
 	                // Sortir de la boucle for
 	                break;
 		        }
@@ -130,6 +163,7 @@ public class CentralizedLinda implements Linda {
         		synchronized(this) {
         			this.wait();
         		}
+        		this.nbProc++;
 	        	// Une fois le thread réveillé, appel récursif sur read
 	        	resultat = read(template);
         	} catch (InterruptedException e) {
@@ -208,45 +242,6 @@ public class CentralizedLinda implements Linda {
         }
         return tupleList;
 	}
-
-	
-	/** Registers a callback which will be called when a tuple matching the template appears.
-     * If the mode is Take, the found tuple is removed from the tuplespace.
-     * The callback is fired once. It may re-register itself if necessary.
-     * If timing is immediate, the callback may immediately fire if a matching tuple is already present; if timing is future, current tuples are ignored.
-     * Beware: a callback should never block as the calling context may be the one of the writer (see also {@link AsynchronousCallback} class).
-     * Callbacks are not ordered: if more than one may be fired, the chosen one is arbitrary.
-     * Beware of loop with a READ/IMMEDIATE re-registering callback !
-     *
-     * @param mode read or take mode.
-     * @param timing (potentially) immediate or only future firing.
-     * @param template the filtering template.
-     * @param callback the callback to call if a matching tuple appears.
-     */
-	public void eventRegister(eventMode mode, eventTiming timing, Tuple template, Callback callback) {
-		Tuple temp = null;
-		// Timing immédiat
-		if (timing == eventTiming.IMMEDIATE) {
-			// Essayer read ou take en fonction du mode
-			if (mode == eventMode.READ) temp = tryRead(template);
-			if (mode == eventMode.TAKE) temp = tryTake(template);
-			// Si un matching tuple existe dans le tuplespace
-			if (temp != null) {
-				// Callback immédiat
-				callback.call(temp);
-			} else {
-				// Sinon mettre en attente le callback
-				enregistrer(template, callback, mode);
-			}
-		}
-		
-		// Timing futur
-		if (timing == eventTiming.FUTURE) {
-			// Ignorer les tuples déjà présents et mettre en attente le callback
-			enregistrer(template, callback, mode);
-		}
-		
-	}
 	
 	
 	/** Enregistrer un callback 
@@ -269,7 +264,51 @@ public class CentralizedLinda implements Linda {
 			listeAttente.get(template).add(abo);
 		}
 	}
+
 	
+	/** Registers a callback which will be called when a tuple matching the template appears.
+     * If the mode is Take, the found tuple is removed from the tuplespace.
+     * The callback is fired once. It may re-register itself if necessary.
+     * If timing is immediate, the callback may immediately fire if a matching tuple is already present; if timing is future, current tuples are ignored.
+     * Beware: a callback should never block as the calling context may be the one of the writer (see also {@link AsynchronousCallback} class).
+     * Callbacks are not ordered: if more than one may be fired, the chosen one is arbitrary.
+     * Beware of loop with a READ/IMMEDIATE re-registering callback !
+     *
+     * @param mode read or take mode.
+     * @param timing (potentially) immediate or only future firing.
+     * @param template the filtering template.
+     * @param callback the callback to call if a matching tuple appears.
+     */
+	public void eventRegister(eventMode mode, eventTiming timing, Tuple template, Callback callback) {
+		Tuple temp = null;
+
+		// Timing immédiat
+		if (timing == eventTiming.IMMEDIATE) {
+			// Essayer read ou take en fonction du mode
+			if (mode == eventMode.READ) {
+				temp = tryRead(template);
+			}
+			if (mode == eventMode.TAKE) {
+				temp = tryTake(template);
+			}
+			// Si un matching tuple existe dans le tuplespace
+			if (temp != null) {
+				// Callback immédiat
+				callback.call(temp);
+			} else {
+				// Sinon mettre en attente le callback
+				enregistrer(template, callback, mode);
+			}
+		}
+		
+		// Timing futur
+		if (timing == eventTiming.FUTURE) {
+			// Ignorer les tuples déjà présents et mettre en attente le callback
+			enregistrer(template, callback, mode);
+		}
+		
+	}
+
 	
     /** To debug, prints any information it wants (e.g. the tuples in tuplespace or the registered callbacks), prefixed by <code>prefix</code. */
 	public void debug(String prefix) {
@@ -285,5 +324,28 @@ public class CentralizedLinda implements Linda {
 	}
 
 
+	public int getTailleMaxTuplespace() {
+		return this.tailleMaxTuplespace;
+	}
+
+	public void setTailleMaxTuplespace(int x) {
+		this.tailleMaxTuplespace = x;
+	}
+
+	public int getTailleMaxFile() {
+		return this.tailleMaxFile;
+	}
+	
+	public void setTailleMaxFile(int x) {
+		this.tailleMaxFile = x;
+	}
+
+	public int getTailleCouranteTuplespace() {
+		return this.tuplespace.size();
+	}
+	
+	public int getNbProc() {
+		return this.nbProc;
+	}
 	
 }
